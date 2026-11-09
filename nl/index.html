@@ -936,13 +936,13 @@ window.VV3D = (() => {
   const LANG = document.documentElement.lang === "en" ? "en" : "nl";
   const t = {
     nl: {
-      like: "Like", dislike: "Dislike", comment: "Reactie", add: "Voeg reactie toe aan de lijst", placeholder: "Wat werkt, wat niet? Enter voegt toe, Shift+Enter is een nieuwe regel.", none: "Nog geen reacties. Gebruik de knopjes bij elk onderdeel.",
+      like: "Like", dislike: "Dislike", comment: "Reactie", add: "Voeg reactie toe aan de lijst", placeholder: "Wat werkt, wat niet? Enter voegt toe, Shift+Enter is een nieuwe regel.", placeholderTouch: "Wat werkt, wat niet? Rond af met de ↑-knop.", none: "Nog geen reacties. Gebruik de knopjes bij elk onderdeel.",
       count: (n) => (n === 1 ? "1 reactie verzameld" : `${n} reacties verzameld`), note: "Nog niets verstuurd.", show: "Bekijk of naam toevoegen", name: "Naam (optioneel)", contact: "E-mail of ander contact (optioneel)", hide: "Verberg", remove: "Verwijder", about: (v) => `Je reageert op de ${v}-versie.`, send: "Alles versturen naar Google Forms",
       privacy: "Je reacties blijven in deze browser tot je op de knop drukt. Daarna komen ze in een Google-formulier dat Noah bekijkt. Bewaard worden je reacties, de onderdelen en of het om 2D of 3D ging, de taal en het tijdstip, en je naam en contact als je die invult. Die gebruikt Noah alleen om je te antwoorden. Laat ze leeg als je anoniem wil blijven, en zet geen persoonlijke gegevens in je reacties.",
       sending: "Versturen…", thanks: "Bedankt, je reacties zijn verstuurd.", failed: "Versturen lukte niet. Je reacties staan er nog; probeer het later opnieuw.",
     },
     en: {
-      like: "Like", dislike: "Dislike", comment: "Comment", add: "Add comment to the list", placeholder: "What works, what does not? Enter adds it, Shift+Enter starts a new line.", none: "No reactions yet. Use the buttons at each component.",
+      like: "Like", dislike: "Dislike", comment: "Comment", add: "Add comment to the list", placeholder: "What works, what does not? Enter adds it, Shift+Enter starts a new line.", placeholderTouch: "What works, what does not? Finish with the ↑ button.", none: "No reactions yet. Use the buttons at each component.",
       count: (n) => (n === 1 ? "1 reaction collected" : `${n} reactions collected`), note: "Nothing sent yet.", show: "View or add your name", name: "Name (optional)", contact: "Email or other contact (optional)", hide: "Hide", remove: "Remove", about: (v) => `You are reacting to the ${v} version.`, send: "Send all to Google Forms",
       privacy: "Your reactions stay in this browser until you press the button. They then go to a Google form that Noah reads. Stored are your reactions, the components and whether they were about 2D or 3D, the language and the time, plus your name and contact if you fill them in. Noah uses those only to reply to you. Leave them empty to stay anonymous, and please keep personal details out of your reactions.",
       sending: "Sending…", thanks: "Thanks, your reactions were sent.", failed: "Sending failed. Your reactions are still here; please try again later.",
@@ -1101,6 +1101,8 @@ window.VV3D = (() => {
 
   toggle.addEventListener("click", () => setPanel(panel.hidden));
 
+  const touch = matchMedia("(pointer: coarse)").matches;
+
   class Feedback extends HTMLElement {
     connectedCallback() {
       if (!bar.isConnected) document.body.append(bar);
@@ -1116,7 +1118,7 @@ window.VV3D = (() => {
           <button type="button" class="tool" data-comment aria-expanded="false">💬 ${t.comment}</button>
         </div>
         <div class="comment-box" hidden>
-          <textarea rows="3" maxlength="1000" enterkeyhint="done"></textarea>
+          <textarea rows="3" maxlength="1000" enterkeyhint="${touch ? "enter" : "done"}"></textarea>
           <button type="button" class="comment-add" aria-label="${t.add}" title="${t.add}"><span aria-hidden="true">↑</span></button>
         </div>
         <p class="feedback-view" hidden></p>`;
@@ -1125,7 +1127,8 @@ window.VV3D = (() => {
       this.commentButton = this.querySelector("[data-comment]");
       this.commentBox = this.querySelector(".comment-box");
       this.textarea = this.querySelector("textarea");
-      this.textarea.placeholder = t.placeholder;
+      this.textarea.placeholder = touch ? t.placeholderTouch : t.placeholder;
+      this.lastFlown = new Map(); // per version: the text that already flew to the bar
       this.textarea.setAttribute("aria-label", `${t.comment}: ${label}`);
       for (const button of this.ratings) {
         button.setAttribute("aria-label", `${button.dataset.rating === "like" ? t.like : t.dislike}: ${label}`);
@@ -1142,17 +1145,14 @@ window.VV3D = (() => {
         if (!this.commentBox.hidden) this.textarea.focus();
       });
       this.textarea.addEventListener("input", () => update(this.key, { comment: this.textarea.value }));
-      // "change" fires when typing is finished, so it flies once and not per key.
-      this.textarea.addEventListener("change", () => {
-        if (this.textarea.value.trim()) fly(this.commentButton, "💬");
-      });
       // Enter finishes the comment; isComposing leaves an input method's Enter alone.
+      // Touch keyboards have no Shift, so there Enter stays a new line.
       this.textarea.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+        if (touch || event.key !== "Enter" || event.shiftKey || event.isComposing) return;
         event.preventDefault();
         this.finishComment();
       });
-      // Phones have no Shift+Enter, so this button is their way to finish.
+      // On touch screens this button is the way to finish.
       this.querySelector(".comment-add").addEventListener("click", () => this.finishComment());
       section?.addEventListener("viewchange", (event) => {
         this.view = event.detail;
@@ -1182,7 +1182,9 @@ window.VV3D = (() => {
     }
 
     finishComment() {
-      this.textarea.blur(); // fires "change" while the field is still visible
+      const text = this.textarea.value.trim();
+      if (text && text !== this.lastFlown.get(this.key)) fly(this.commentButton, "💬");
+      this.lastFlown.set(this.key, text);
       this.showCommentBox(false);
       this.commentButton.focus();
     }
