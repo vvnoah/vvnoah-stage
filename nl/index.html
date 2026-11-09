@@ -17,9 +17,6 @@ body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.5 "Liberation Se
 a{color:var(--link)}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 p{margin:0 0 10px}
-.draft{margin:0;padding:6px 16px;background:var(--red);color:#fff;font-size:14px;text-align:center}
-:root[data-theme="dark"] .draft{color:#141414}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .draft{color:#141414}}
 .wrap{max-width:880px;margin:0 auto;padding:0 16px}
 .top{display:flex;justify-content:flex-end;gap:8px;padding-top:14px}
 .tool{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:4px 10px;font:14px "Liberation Serif","Times New Roman",serif;cursor:pointer;text-decoration:none}
@@ -50,7 +47,7 @@ input:checked+.choice{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--i
 input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
 .check{display:flex;align-items:center;gap:7px;cursor:pointer;min-height:28px}
 .range{display:block}
-.range input{display:block;width:100%;accent-color:var(--link)}
+.range input{display:block;width:100%;height:40px;margin:0;accent-color:var(--link);touch-action:pan-y}
 .status{min-height:1.5em;margin:0;color:var(--muted);font-size:15px}
 .status.bad{color:var(--red);font-weight:700}
 .grid{display:grid;grid-template-columns:repeat(8,1fr);gap:2px;max-width:250px}
@@ -70,7 +67,6 @@ input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
 </style>
 </head>
 <body>
-<p class="draft">Concept door Claude, samengesteld uit Noahs notities. Nog niet door Noah nagelezen.</p>
 <div class="wrap">
   <nav class="top" aria-label="Instellingen">
     <a class="tool" href="../en/" hreflang="en">English</a>
@@ -405,14 +401,14 @@ input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
 
   class RaceCar extends HTMLElement {
     connectedCallback() {
-      this.state = { body: "yellow", rims: "black", spoiler: "wing", drop: 8, stripe: true, cage: true, splitter: false };
+      this.state = { body: "yellow", rims: "black", spoiler: "wing", ride: 8, stripe: true, cage: true, splitter: false };
       this.drawing = svg("svg", { viewBox: "0 0 560 240", role: "img", "aria-label": t.carView });
       const set = (key) => (value) => { this.state[key] = value; this.draw(); };
       const controls = html("div", { class: "controls" },
         radios(t.body, ["yellow", "red", "black", "white"], this.state.body, set("body"), true),
         radios(t.rims, ["black", "silver", "gold"], this.state.rims, set("rims"), true),
         radios(t.spoiler, ["none", "lip", "wing"], this.state.spoiler, set("spoiler")),
-        slider(t.ride, 0, 16, this.state.drop, set("drop")),
+        slider(t.ride, 0, 40, this.state.ride, set("ride")),
         checkbox(t.stripe, this.state.stripe, set("stripe")),
         checkbox(t.cage, this.state.cage, set("cage")),
         checkbox(t.splitter, this.state.splitter, set("splitter")));
@@ -423,12 +419,16 @@ input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
     draw() {
       const s = this.state;
       const line = (d, color, width) => svg("path", { d, fill: "none", stroke: color, "stroke-width": width, "stroke-linecap": "round" });
-      const arch = (x) => svg("circle", { cx: x, cy: 172, r: 42, fill: "#17181a" });
+      // Only the part of the arch above the sill (y = 166), so it cannot hang below the body.
+      const arch = (x) => svg("path", { d: `M${x - 41.6} 166 A42 42 0 0 1 ${x + 41.6} 166 Z`, fill: "#17181a" });
+      // A higher ride value lifts the body; the wheels stay on the ground.
+      const lift = 14 - s.ride;
+      const strut = (x) => line(`M${x} 186 L${x} ${150 + lift}`, "#555", 9);
       const wheel = (x) => svg("g", {},
         svg("circle", { cx: x, cy: 186, r: 36, fill: "#111" }),
         svg("circle", { cx: x, cy: 186, r: 22, fill: COLORS[s.rims], stroke: "#555", "stroke-width": 1 }),
         svg("circle", { cx: x, cy: 186, r: 5, fill: "#333" }));
-      const body = svg("g", { transform: `translate(0 ${s.drop})` },
+      const body = svg("g", { transform: `translate(0 ${lift})` },
         svg("path", { d: "M30 166 L34 140 Q38 128 60 124 L150 112 L205 72 Q215 65 235 65 L340 65 Q360 65 375 80 L420 112 L510 122 Q530 126 532 145 L534 166 Z", class: "part", fill: COLORS[s.body], stroke: "#1b1b1b", "stroke-width": 2 }),
         svg("path", { d: "M168 110 L212 78 L285 78 L285 110Z M297 78 L345 78 Q355 80 365 90 L385 110 L297 110Z", fill: "#2a3440" }));
       if (s.stripe) body.append(svg("rect", { x: 34, y: 136, width: 496, height: 8, fill: s.body === "white" || s.body === "yellow" ? "#c8283a" : "#f2c81e" }));
@@ -439,7 +439,7 @@ input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
       body.append(arch(130), arch(430));
       this.drawing.replaceChildren(
         svg("rect", { x: 0, y: 222, width: 560, height: 18, fill: "#00000022" }),
-        body, wheel(130), wheel(430));
+        strut(130), strut(430), body, wheel(130), wheel(430));
     }
   }
 
