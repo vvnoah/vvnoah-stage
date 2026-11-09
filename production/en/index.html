@@ -38,6 +38,11 @@ footer{padding:20px 0 48px;border-top:1px solid var(--line);color:var(--muted);f
 .toy{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:14px;align-items:start}
 .view{background:var(--stage);border:1px solid var(--line);border-radius:6px;overflow:hidden}
 .view svg{display:block;width:100%;height:auto}
+.view canvas{display:block;width:100%;aspect-ratio:3/2;cursor:grab;touch-action:pan-y}
+.off{opacity:.45}
+.view-note{min-height:0;margin:0;color:var(--muted);font-size:15px}
+.view-note:empty{display:none}
+.feedback-view{margin:6px 0 0;color:var(--muted);font-size:14px}
 .controls{display:flex;flex-direction:column;gap:10px;font-size:15px}
 fieldset{border:0;margin:0;padding:0}
 legend{padding:0;font-weight:700;font-size:15px}

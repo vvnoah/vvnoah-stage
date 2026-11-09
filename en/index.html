@@ -39,6 +39,11 @@ footer{padding:20px 0 48px;border-top:1px solid var(--line);color:var(--muted);f
 .toy{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:14px;align-items:start}
 .view{background:var(--stage);border:1px solid var(--line);border-radius:6px;overflow:hidden}
 .view svg{display:block;width:100%;height:auto}
+.view canvas{display:block;width:100%;aspect-ratio:3/2;cursor:grab;touch-action:pan-y}
+.off{opacity:.45}
+.view-note{min-height:0;margin:0;color:var(--muted);font-size:15px}
+.view-note:empty{display:none}
+.feedback-view{margin:6px 0 0;color:var(--muted);font-size:14px}
 .controls{display:flex;flex-direction:column;gap:10px;font-size:15px}
 fieldset{border:0;margin:0;padding:0}
 legend{padding:0;font-weight:700;font-size:15px}
@@ -176,8 +181,250 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
 
   <footer>© 2026 Noah Van Vaerenbergh · The examples are simplified toys, made specifically for this page.</footer>
 </div>
-<script>// Four small toys for the public page. They are drawn from scratch here and
-// share nothing with the real CAD system: this file is readable by any visitor.
+<script>// A small WebGL2 viewer for the 3D versions of the toys. Made by Claude with Noah.
+//
+// Written here instead of using three.js (about 700 kB) because the toys only need
+// coloured meshes and an orbit camera. It draws only when something changed, so an
+// idle 3D view uses no battery.
+window.VV3D = (() => {
+  const VERTEX = `#version 300 es
+    in vec3 position; in vec3 normal;
+    uniform mat4 camera; uniform vec3 pivot, offset; uniform float size;
+    out vec3 surface;
+    void main() {
+      surface = normal;
+      gl_Position = camera * vec4(pivot + (position - pivot) * size + offset, 1.0);
+    }`;
+  const FRAGMENT = `#version 300 es
+    precision mediump float;
+    in vec3 surface; uniform vec3 color; out vec4 pixel;
+    void main() {
+      vec3 n = normalize(gl_FrontFacing ? surface : -surface);
+      float light = 0.45 + 0.25 * n.y + 0.4 * max(dot(n, normalize(vec3(0.5, 0.8, 0.6))), 0.0);
+      pixel = vec4(pow(color * light, vec3(1.0 / 2.2)), 1.0);
+    }`;
+
+  let support;
+  // Refuses software rendering too: a device without a real GPU keeps the 2D version.
+  function supported() {
+    if (support !== undefined) return support;
+    try {
+      const gl = document.createElement("canvas").getContext("webgl2", { failIfMajorPerformanceCaveat: true });
+      support = Boolean(gl);
+      gl?.getExtension("WEBGL_lose_context")?.loseContext();
+    } catch (error) { support = false; }
+    return support;
+  }
+
+  function linear(hex) {
+    return [1, 3, 5].map((i) => (parseInt(hex.slice(i, i + 2), 16) / 255) ** 2.2);
+  }
+
+  // A .glb is a JSON description followed by one binary block. FreeCAD's export
+  // here writes one unindexed primitive per node, without node transforms.
+  function parseGlb(file) {
+    const data = new DataView(file);
+    if (data.getUint32(0, true) !== 0x46546c67) throw new Error("not a glb");
+    const jsonLength = data.getUint32(12, true);
+    const gltf = JSON.parse(new TextDecoder().decode(new Uint8Array(file, 20, jsonLength)));
+    const binary = 20 + jsonLength + 8;
+    const floats = (index) => {
+      const accessor = gltf.accessors[index];
+      const view = gltf.bufferViews[accessor.bufferView];
+      const start = binary + (view.byteOffset || 0) + (accessor.byteOffset || 0);
+      return new Float32Array(file.slice(start, start + accessor.count * 12));
+    };
+    return gltf.nodes.filter((node) => node.mesh !== undefined && node.name !== "ground").map((node) => {
+      const primitive = gltf.meshes[node.mesh].primitives[0];
+      if (primitive.indices !== undefined) throw new Error("indexed mesh");
+      const factor = gltf.materials[primitive.material].pbrMetallicRoughness.baseColorFactor;
+      return { name: node.name, positions: floats(primitive.attributes.POSITION), normals: floats(primitive.attributes.NORMAL), color: factor.slice(0, 3) };
+    });
+  }
+
+  const downloads = new Map();
+  function load(url) {
+    if (!downloads.has(url)) {
+      const request = fetch(url).then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.arrayBuffer();
+      }).then(parseGlb);
+      request.catch(() => downloads.delete(url)); // a later try may succeed
+      downloads.set(url, request);
+    }
+    return downloads.get(url);
+  }
+
+  // Six faces with outward normals, added to growing position and normal arrays.
+  function addBox(mesh, [x0, y0, z0], [x1, y1, z1]) {
+    const faces = [
+      [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1], [1, 0, 0]],
+      [[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0], [-1, 0, 0]],
+      [[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [0, 1, 0]],
+      [[x0, y0, z1], [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [0, -1, 0]],
+      [[x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [x0, y0, z1], [0, 0, 1]],
+      [[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0], [0, 0, -1]],
+    ];
+    for (const [a, b, c, d, n] of faces) for (const corner of [a, b, c, a, c, d]) {
+      mesh.positions.push(...corner);
+      mesh.normals.push(...n);
+    }
+  }
+
+  function boxes(name, hex, list) {
+    const mesh = { positions: [], normals: [] };
+    for (const [from, to] of list) addBox(mesh, from, to);
+    return { name, color: linear(hex), positions: new Float32Array(mesh.positions), normals: new Float32Array(mesh.normals) };
+  }
+
+  function boundsOf(parts) {
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (const part of parts) for (let i = 0; i < part.positions.length; i += 3) for (let axis = 0; axis < 3; axis++) {
+      const value = part.positions[i + axis];
+      if (value < min[axis]) min[axis] = value;
+      if (value > max[axis]) max[axis] = value;
+    }
+    return { min, max };
+  }
+
+  const subtract = (a, b) => a.map((value, i) => value - b[i]);
+  const dot = (a, b) => a.reduce((sum, value, i) => sum + value * b[i], 0);
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const unit = (a) => { const length = Math.hypot(...a); return a.map((value) => value / length); };
+
+  class Viewer {
+    constructor(canvas, label, onLost) {
+      this.canvas = canvas;
+      canvas.setAttribute("role", "img");
+      canvas.setAttribute("aria-label", label);
+      canvas.tabIndex = 0;
+      const gl = this.gl = canvas.getContext("webgl2", { antialias: true, failIfMajorPerformanceCaveat: true });
+      if (!gl) throw new Error("no WebGL2");
+      const program = this.program = gl.createProgram();
+      for (const [type, source] of [[gl.VERTEX_SHADER, VERTEX], [gl.FRAGMENT_SHADER, FRAGMENT]]) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        gl.attachShader(program, shader);
+      }
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+      gl.useProgram(program);
+      gl.enable(gl.DEPTH_TEST);
+      this.uniforms = Object.fromEntries(["camera", "pivot", "offset", "size", "color"].map((name) => [name, gl.getUniformLocation(program, name)]));
+      this.parts = [];
+      this.yaw = 0.7; this.pitch = 0.3;
+      this.target = [0, 0, 0]; this.distance = 1;
+      canvas.addEventListener("webglcontextlost", (event) => { event.preventDefault(); onLost(); });
+      new ResizeObserver(() => this.draw()).observe(canvas);
+      this.listen();
+    }
+
+    // Horizontal drags orbit everywhere. CSS leaves vertical touch drags to the
+    // page, so the model cannot trap a thumb that is scrolling past it.
+    listen() {
+      const canvas = this.canvas;
+      let last = null;
+      const orbit = (dx, dy) => {
+        this.yaw -= dx;
+        this.pitch = Math.max(-0.1, Math.min(1.45, this.pitch + dy));
+        this.draw();
+      };
+      canvas.addEventListener("pointerdown", (event) => { last = event; canvas.setPointerCapture(event.pointerId); });
+      canvas.addEventListener("pointermove", (event) => {
+        if (!last) return;
+        orbit((event.clientX - last.clientX) * 0.01, (event.clientY - last.clientY) * 0.01);
+        last = event;
+      });
+      for (const end of ["pointerup", "pointercancel"]) canvas.addEventListener(end, () => { last = null; });
+      canvas.addEventListener("keydown", (event) => {
+        const step = { ArrowLeft: [-0.1, 0], ArrowRight: [0.1, 0], ArrowUp: [0, 0.1], ArrowDown: [0, -0.1] }[event.key];
+        if (!step) return;
+        event.preventDefault();
+        orbit(...step);
+      });
+    }
+
+    // Parts: name, color, positions, normals, plus optional visible, size, pivot, offset.
+    setParts(parts) {
+      const gl = this.gl;
+      for (const part of this.parts) gl.deleteVertexArray(part.vao), gl.deleteBuffer(part.positionBuffer), gl.deleteBuffer(part.normalBuffer);
+      this.parts = parts.map((source) => {
+        const part = { visible: true, size: 1, pivot: [0, 0, 0], offset: [0, 0, 0], ...source, count: source.positions.length / 3 };
+        part.vao = gl.createVertexArray();
+        gl.bindVertexArray(part.vao);
+        const attribute = (name, values) => {
+          const buffer = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+          gl.bufferData(gl.ARRAY_BUFFER, values, gl.STATIC_DRAW);
+          const location = gl.getAttribLocation(this.program, name);
+          gl.enableVertexAttribArray(location);
+          gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 0, 0);
+          return buffer;
+        };
+        part.positionBuffer = attribute("position", part.positions);
+        part.normalBuffer = attribute("normal", part.normals);
+        return part;
+      });
+      gl.bindVertexArray(null);
+    }
+
+    frame({ min, max }) {
+      this.target = min.map((value, i) => (value + max[i]) / 2);
+      this.distance = Math.hypot(...subtract(max, min)) * 1.12;
+    }
+
+    part(name) { return this.parts.find((part) => part.name === name); }
+    named(test) { return this.parts.filter((part) => test(part.name)); }
+
+    matrix(aspect) {
+      const direction = [Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch)];
+      const eye = this.target.map((value, i) => value + direction[i] * this.distance);
+      const back = unit(subtract(eye, this.target));
+      const right = unit(cross([0, 1, 0], back));
+      const up = cross(back, right);
+      const near = this.distance / 50, far = this.distance * 6;
+      const focal = 1 / Math.tan(0.42) * Math.min(1, aspect / 1.2);
+      const a = (far + near) / (near - far), b = 2 * far * near / (near - far);
+      const x = -dot(right, eye), y = -dot(up, eye), z = -dot(back, eye);
+      return new Float32Array([
+        focal / aspect * right[0], focal * up[0], a * back[0], -back[0],
+        focal / aspect * right[1], focal * up[1], a * back[1], -back[1],
+        focal / aspect * right[2], focal * up[2], a * back[2], -back[2],
+        focal / aspect * x, focal * y, a * z + b, -z,
+      ]);
+    }
+
+    draw() {
+      const { gl, canvas, uniforms } = this;
+      const ratio = Math.min(devicePixelRatio || 1, 2);
+      const width = Math.round(canvas.clientWidth * ratio), height = Math.round(canvas.clientHeight * ratio);
+      if (!width || !height) return;
+      if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+      gl.viewport(0, 0, width, height);
+      const stage = getComputedStyle(canvas).getPropertyValue("--stage").trim();
+      const [r, g, b] = /^#[0-9a-f]{6}$/i.test(stage) ? [1, 3, 5].map((i) => parseInt(stage.slice(i, i + 2), 16) / 255) : [0.9, 0.9, 0.88];
+      gl.clearColor(r, g, b, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.uniformMatrix4fv(uniforms.camera, false, this.matrix(width / height));
+      for (const part of this.parts) {
+        if (!part.visible) continue;
+        gl.uniform3fv(uniforms.pivot, part.pivot);
+        gl.uniform3fv(uniforms.offset, part.offset);
+        gl.uniform1f(uniforms.size, part.size);
+        gl.uniform3fv(uniforms.color, part.color);
+        gl.bindVertexArray(part.vao);
+        gl.drawArrays(gl.TRIANGLES, 0, part.count);
+      }
+      gl.bindVertexArray(null);
+    }
+  }
+
+  return { supported, load, boxes, boundsOf, linear, Viewer };
+})();
+// Four small toys for the public page. The 2D versions are drawn from scratch here;
+// this file is readable by any visitor. The minibike and car in 3D are representative
+// FreeCAD models (assets/models), built from published sizes, not Noah's own vehicles.
 (() => {
   const LANG = document.documentElement.lang === "en" ? "en" : "nl";
   const WORDS = {
@@ -197,6 +444,10 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
       machine: (n) => `${n}, verplaatsbaar`,
       body: "Koetswerk", rims: "Velgen", spoiler: "Spoiler", none: "Geen", lip: "Klein", wing: "Vleugel",
       ride: "Rijhoogte", stripe: "Racestreep", cage: "Rolkooi", splitter: "Splitter",
+      viewMode: "Weergave", "2d": "2D", "3d": "3D",
+      no3d: "De 3D-versie past niet bij dit toestel, dus je ziet 2D.", loading3d: "3D-model laden…", failed3d: "Het 3D-model kon niet laden. Je ziet weer 2D.",
+      download: (mb) => `3D downloadt ${mb} MB. Sleep om te draaien.`, orbit: "Sleep om te draaien, of gebruik de pijltjestoetsen.", only2d: "Grijze keuzes bestaan alleen in 2D.", moveIn2d: "Verplaatsen doe je in 2D.",
+      moto3d: "Draaibaar 3D-model van een brommer", car3d: "Draaibaar 3D-model van een raceauto", room3d: "Draaibaar 3D-model van de getekende ruimte", shop3d: "Draaibaar 3D-model van de werkplaats",
     },
     en: {
       frame: "Frame", tank: "Tank", seat: "Seat", exhaust: "Exhaust", wheels: "Wheels",
@@ -214,6 +465,10 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
       machine: (n) => `${n}, movable`,
       body: "Body", rims: "Rims", spoiler: "Spoiler", none: "None", lip: "Small", wing: "Wing",
       ride: "Ride height", stripe: "Race stripe", cage: "Roll cage", splitter: "Splitter",
+      viewMode: "View", "2d": "2D", "3d": "3D",
+      no3d: "The 3D version does not suit this device, so you see 2D.", loading3d: "Loading 3D model…", failed3d: "The 3D model could not load. Back to 2D.",
+      download: (mb) => `3D downloads ${mb} MB. Drag to turn it.`, orbit: "Drag to turn it, or use the arrow keys.", only2d: "Greyed-out choices exist in 2D only.", moveIn2d: "Moving things happens in 2D.",
+      moto3d: "Rotatable 3D model of a minibike", car3d: "Rotatable 3D model of a race car", room3d: "Rotatable 3D model of the drawn room", shop3d: "Rotatable 3D model of the workshop",
     },
   };
   const t = WORDS[LANG];
@@ -277,19 +532,106 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
     host.replaceChildren(html("div", { class: "toy" }, html("div", { class: "view" }, drawing), controls));
   }
 
+  // Adds the 2D/3D choice to a toy. 2D is always the start, and nothing is
+  // downloaded or drawn in 3D until the visitor asks. "viewchange" tells the
+  // feedback buttons, only once the 3D version is really on screen.
+  function addViewSwitch(host, { label, hint, note3d = "", only2d = [], build, update }) {
+    const controls = host.querySelector(".controls");
+    if (!window.VV3D?.supported()) {
+      controls.prepend(html("p", { class: "view-note" }, t.no3d));
+      return;
+    }
+    const view = host.querySelector(".view");
+    const drawing = view.firstElementChild;
+    const note = html("p", { class: "view-note", "aria-live": "polite" }, hint);
+    let viewer = null, canvas = null, request = 0;
+    const lockOnly2d = (locked) => {
+      for (const control of only2d) {
+        control.classList.toggle("off", locked);
+        for (const input of control.matches("input") ? [control] : control.querySelectorAll("input")) input.disabled = locked;
+      }
+    };
+    const show = (mode) => {
+      drawing.toggleAttribute("hidden", mode === "3d");
+      canvas?.toggleAttribute("hidden", mode === "2d");
+      lockOnly2d(mode === "3d");
+      host.dispatchEvent(new CustomEvent("viewchange", { bubbles: true, detail: mode }));
+    };
+    const box = radios(t.viewMode, ["2d", "3d"], "2d", async (mode) => {
+      const mine = ++request;
+      if (mode === "2d") { show("2d"); host.redraw3d = null; note.textContent = hint; return; }
+      note.textContent = t.loading3d;
+      try {
+        if (!viewer) {
+          canvas = html("canvas", { hidden: true });
+          view.append(canvas);
+          viewer = new VV3D.Viewer(canvas, label, () => {
+            canvas.remove();
+            viewer = canvas = null;
+            fallBack();
+          });
+          await build(viewer);
+        }
+        if (mine !== request) return; // the visitor went back to 2D meanwhile
+        host.redraw3d = () => { update(viewer); viewer.draw(); };
+        show("3d");
+        host.redraw3d();
+        note.textContent = [t.orbit, only2d.length ? t.only2d : "", note3d].filter(Boolean).join(" ");
+      } catch (error) {
+        canvas?.remove();
+        viewer = canvas = null;
+        if (mine === request) fallBack();
+      }
+    });
+    function fallBack() {
+      box.querySelector('input[value="2d"]').checked = true;
+      show("2d");
+      host.redraw3d = null;
+      note.textContent = t.failed3d;
+    }
+    controls.prepend(box, note);
+  }
+
   class Customizer extends HTMLElement {
     connectedCallback() {
       this.state = { frame: "black", tank: "yellow", seat: "black", exhaust: "low", wheels: "small" };
       this.drawing = svg("svg", { viewBox: "0 0 480 300", role: "img", "aria-label": t.motoView });
       const update = (key) => (value) => { this.state[key] = value; this.draw(); };
+      const exhaust = radios(t.exhaust, ["low", "high"], this.state.exhaust, update("exhaust"));
       const controls = html("div", { class: "controls" },
         radios(t.frame, ["black", "red", "white", "silver"], this.state.frame, update("frame"), true),
         radios(t.tank, ["yellow", "red", "black", "white"], this.state.tank, update("tank"), true),
         radios(t.seat, ["black", "brown"], this.state.seat, update("seat"), true),
-        radios(t.exhaust, ["low", "high"], this.state.exhaust, update("exhaust")),
+        exhaust,
         radios(t.wheels, ["small", "large"], this.state.wheels, update("wheels")));
       layout(this, this.drawing, controls);
+      addViewSwitch(this, {
+        label: t.moto3d, hint: t.download(3), only2d: [exhaust],
+        build: async (viewer) => {
+          const parts = await VV3D.load("../models/honda-dax.glb");
+          viewer.setParts(parts);
+          viewer.frame(VV3D.boundsOf(parts));
+          for (const wheel of viewer.named((name) => /tyre|rim/.test(name))) {
+            const { min, max } = VV3D.boundsOf([wheel]);
+            wheel.pivot = min.map((value, i) => (value + max[i]) / 2);
+          }
+        },
+        update: (viewer) => this.update3d(viewer),
+      });
       this.draw();
+    }
+
+    // The large wheels grow around their hubs and the whole bike rises with them.
+    update3d(viewer) {
+      const s = this.state;
+      const paint = (name, color) => { viewer.part(name).color = VV3D.linear(COLORS[color]); };
+      paint("frame", s.frame); paint("side_covers", s.tank); paint("seat", s.seat);
+      const size = s.wheels === "large" ? 1.14 : 1;
+      const lift = 0.216 * (size - 1);
+      for (const part of viewer.parts) {
+        part.offset = [0, lift, 0];
+        if (/tyre|rim/.test(part.name)) part.size = size;
+      }
     }
 
     draw() {
@@ -317,6 +659,7 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
         svg("path", { d: "M232 126 Q240 88 290 86 Q326 88 326 116 Q292 152 232 126Z", class: "part", fill: COLORS[s.tank], stroke: "#1b1b1b", "stroke-width": 2 }),
         svg("path", { d: "M104 128 Q104 110 124 112 L228 118 Q236 124 228 136 L122 142 Q104 142 104 128Z", class: "part", fill: COLORS[s.seat] }),
         stroke(exhaust, "#3e4247", 12));
+      this.redraw3d?.();
     }
   }
 
@@ -342,7 +685,28 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
       clear.addEventListener("click", () => { this.floor.clear(); this.draw(); });
       layout(this, this.drawing, html("div", { class: "controls" }, grid,
         slider(t.height, 1, 4, this.wall, (v) => { this.wall = v; this.draw(); }), clear, this.status));
+      addViewSwitch(this, {
+        label: t.room3d, hint: "",
+        build: async (viewer) => { viewer.frame({ min: [0, 0, 0], max: [this.cols, 2, this.rows] }); viewer.distance *= 1.15; viewer.pitch = 0.85; },
+        update: (viewer) => this.update3d(viewer),
+      });
       this.draw();
+    }
+
+    // Built again on every change: the geometry depends on what the visitor drew.
+    update3d(viewer) {
+      const has = (x, y) => this.floor.has(`${x},${y}`);
+      const height = this.wall * 0.5, thick = 0.06;
+      const floor = [[[0, -0.1, 0], [this.cols, -0.04, this.rows]]], tiles = [], walls = [];
+      for (const key of this.floor) {
+        const [x, y] = key.split(",").map(Number);
+        tiles.push([[x, -0.04, y], [x + 1, 0, y + 1]]);
+        if (!has(x, y - 1)) walls.push([[x, 0, y - thick], [x + 1, height, y + thick]]);
+        if (!has(x, y + 1)) walls.push([[x, 0, y + 1 - thick], [x + 1, height, y + 1 + thick]]);
+        if (!has(x - 1, y)) walls.push([[x - thick, 0, y], [x + thick, height, y + 1]]);
+        if (!has(x + 1, y)) walls.push([[x + 1 - thick, 0, y], [x + 1 + thick, height, y + 1]]);
+      }
+      viewer.setParts([VV3D.boxes("floor", "#a9a69e", floor), VV3D.boxes("tiles", "#f2c81e", tiles), VV3D.boxes("walls", "#f4f2ec", walls)]);
     }
 
     // Isometric projection: two floor axes plus height, painted back to front.
@@ -367,24 +731,41 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
       this.drawing.replaceChildren(...shapes);
       for (const [key, cell] of this.cells) cell.setAttribute("aria-pressed", this.floor.has(key));
       this.status.textContent = this.floor.size ? t.area(this.floor.size * 4) : t.emptyPlan;
+      this.redraw3d?.();
     }
   }
 
   class Workshop extends HTMLElement {
     connectedCallback() {
       this.items = [
-        { name: t.bench, w: 200, h: 70, x: 30, y: 20, color: "#f2c81e" },
-        { name: t.printer, w: 60, h: 60, x: 290, y: 20, color: "#f4f2ec" },
-        { name: t.weld, w: 120, h: 120, x: 450, y: 250, color: "#c8283a" },
-        { name: t.drill, w: 60, h: 60, x: 30, y: 300, color: "#b9bdc2" },
-        { name: t.sander, w: 80, h: 60, x: 250, y: 310, color: "#b9bdc2" },
+        { tall: 90, name: t.bench, w: 200, h: 70, x: 30, y: 20, color: "#f2c81e" },
+        { tall: 50, name: t.printer, w: 60, h: 60, x: 290, y: 20, color: "#f4f2ec" },
+        { tall: 100, name: t.weld, w: 120, h: 120, x: 450, y: 250, color: "#c8283a" },
+        { tall: 170, name: t.drill, w: 60, h: 60, x: 30, y: 300, color: "#b9bdc2" },
+        { tall: 110, name: t.sander, w: 80, h: 60, x: 250, y: 310, color: "#b9bdc2" },
       ];
       this.drawing = svg("svg", { viewBox: "0 0 600 400", role: "group", "aria-label": t.shopView });
       this.drawing.append(svg("rect", { x: 2, y: 2, width: 596, height: 396, fill: "none", stroke: "#1b1b1b", "stroke-width": 4 }));
       for (const item of this.items) this.addMachine(item);
       this.status = html("p", { class: "status", "aria-live": "polite" });
       layout(this, this.drawing, html("div", { class: "controls" }, html("p", {}, t.shopHelp), this.status));
+      addViewSwitch(this, {
+        label: t.shop3d, hint: "", note3d: t.moveIn2d,
+        build: async (viewer) => { viewer.frame({ min: [0, 0, 0], max: [6, 1.8, 4] }); viewer.pitch = 0.7; },
+        update: (viewer) => this.update3d(viewer),
+      });
       this.refresh();
+    }
+
+    // The same positions as the plan, in metres; centimetres divide by 100.
+    update3d(viewer) {
+      const low = 0.25, side = 0.04;
+      viewer.setParts([
+        VV3D.boxes("floor", "#a9a69e", [[[0, -0.06, 0], [6, 0, 4]]]),
+        VV3D.boxes("walls", "#f4f2ec", [[[0, 0, -side], [6, low, 0]], [[-side, 0, 0], [0, low, 4]], [[6, 0, 0], [6 + side, low, 4]], [[0, 0, 4], [6, low, 4 + side]]]),
+        ...this.items.map((item) => VV3D.boxes(item.name, this.colliding.has(item) ? "#ff1f3d" : item.color,
+          [[[item.x / 100, 0, item.y / 100], [(item.x + item.w) / 100, item.tall / 100, (item.y + item.h) / 100]]])),
+      ]);
     }
 
     addMachine(item) {
@@ -443,6 +824,8 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
       const used = this.items.reduce((sum, item) => sum + item.w * item.h, 0) / 10000;
       this.status.textContent = problems[0] || t.shopOk((24 - used).toLocaleString(LANG, { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
       this.status.classList.toggle("bad", colliding.size > 0);
+      this.colliding = colliding;
+      this.redraw3d?.();
     }
   }
 
@@ -451,16 +834,42 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
       this.state = { body: "yellow", rims: "black", spoiler: "wing", ride: 8, stripe: true, cage: true, splitter: false };
       this.drawing = svg("svg", { viewBox: "0 0 560 240", role: "img", "aria-label": t.carView });
       const set = (key) => (value) => { this.state[key] = value; this.draw(); };
+      const extras = [checkbox(t.stripe, this.state.stripe, set("stripe")), checkbox(t.cage, this.state.cage, set("cage")), checkbox(t.splitter, this.state.splitter, set("splitter"))];
+      const spoiler = radios(t.spoiler, ["none", "lip", "wing"], this.state.spoiler, set("spoiler"));
       const controls = html("div", { class: "controls" },
         radios(t.body, ["yellow", "red", "black", "white"], this.state.body, set("body"), true),
         radios(t.rims, ["black", "silver", "gold"], this.state.rims, set("rims"), true),
-        radios(t.spoiler, ["none", "lip", "wing"], this.state.spoiler, set("spoiler")),
+        spoiler,
         slider(t.ride, 0, 40, this.state.ride, set("ride")),
-        checkbox(t.stripe, this.state.stripe, set("stripe")),
-        checkbox(t.cage, this.state.cage, set("cage")),
-        checkbox(t.splitter, this.state.splitter, set("splitter")));
+        ...extras);
       layout(this, this.drawing, controls);
+      addViewSwitch(this, {
+        label: t.car3d, hint: t.download(3), only2d: extras,
+        build: async (viewer) => {
+          const parts = await VV3D.load("../models/honda-crx-del-sol.glb");
+          viewer.setParts(parts);
+          viewer.frame(VV3D.boundsOf(parts));
+          // Roof, pillars and spoiler are separate parts in the body colour of the model.
+          const paint = String(viewer.part("body").color);
+          this.painted = viewer.parts.filter((part) => String(part.color) === paint);
+        },
+        update: (viewer) => this.update3d(viewer),
+      });
       this.draw();
+    }
+
+    // The ride slider lifts everything except the wheels, as in the 2D drawing.
+    update3d(viewer) {
+      const s = this.state;
+      for (const part of this.painted) part.color = VV3D.linear(COLORS[s.body]);
+      for (const rim of viewer.named((name) => /_rim$/.test(name))) rim.color = VV3D.linear(COLORS[s.rims]);
+      const wing = viewer.part("spoiler"), stands = viewer.part("spoiler_stands");
+      const lift = (s.ride - 8) * 0.0025;
+      for (const part of viewer.parts) if (!/tyre|rim/.test(part.name)) part.offset = [0, lift, 0];
+      wing.visible = s.spoiler !== "none";
+      stands.visible = s.spoiler === "wing";
+      // A lip is the same blade lowered onto the boot, without its stands.
+      if (s.spoiler === "lip") wing.offset = [0, lift + VV3D.boundsOf([stands]).min[1] - VV3D.boundsOf([wing]).min[1], 0];
     }
 
     draw() {
@@ -487,6 +896,7 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
       this.drawing.replaceChildren(
         svg("rect", { x: 0, y: 222, width: 560, height: 18, fill: "#00000022" }),
         strut(130), strut(430), body, wheel(130), wheel(430));
+      this.redraw3d?.();
     }
   }
 
@@ -505,27 +915,32 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
   const t = {
     nl: {
       like: "Like", dislike: "Dislike", comment: "Reactie", placeholder: "Wat werkt, wat niet? Enter voegt toe, Shift+Enter is een nieuwe regel.", none: "Nog geen reacties. Gebruik de knopjes bij elk onderdeel.",
-      count: (n) => (n === 1 ? "1 reactie verzameld" : `${n} reacties verzameld`), note: "Nog niets verstuurd.", show: "Bekijk of naam toevoegen", name: "Naam (optioneel)", contact: "E-mail of ander contact (optioneel)", hide: "Verberg", remove: "Verwijder", send: "Alles versturen naar Google Forms",
-      privacy: "Je reacties blijven in deze browser tot je op de knop drukt. Daarna komen ze in een Google-formulier dat Noah bekijkt. Bewaard worden je reacties, de onderdelen, de taal en het tijdstip, en je naam en contact als je die invult. Die gebruikt Noah alleen om je te antwoorden. Laat ze leeg als je anoniem wil blijven, en zet geen persoonlijke gegevens in je reacties.",
+      count: (n) => (n === 1 ? "1 reactie verzameld" : `${n} reacties verzameld`), note: "Nog niets verstuurd.", show: "Bekijk of naam toevoegen", name: "Naam (optioneel)", contact: "E-mail of ander contact (optioneel)", hide: "Verberg", remove: "Verwijder", about: (v) => `Je reageert op de ${v}-versie.`, send: "Alles versturen naar Google Forms",
+      privacy: "Je reacties blijven in deze browser tot je op de knop drukt. Daarna komen ze in een Google-formulier dat Noah bekijkt. Bewaard worden je reacties, de onderdelen en of het om 2D of 3D ging, de taal en het tijdstip, en je naam en contact als je die invult. Die gebruikt Noah alleen om je te antwoorden. Laat ze leeg als je anoniem wil blijven, en zet geen persoonlijke gegevens in je reacties.",
       sending: "Versturen…", thanks: "Bedankt, je reacties zijn verstuurd.", failed: "Versturen lukte niet. Je reacties staan er nog; probeer het later opnieuw.",
     },
     en: {
       like: "Like", dislike: "Dislike", comment: "Comment", placeholder: "What works, what does not? Enter adds it, Shift+Enter starts a new line.", none: "No reactions yet. Use the buttons at each component.",
-      count: (n) => (n === 1 ? "1 reaction collected" : `${n} reactions collected`), note: "Nothing sent yet.", show: "View or add your name", name: "Name (optional)", contact: "Email or other contact (optional)", hide: "Hide", remove: "Remove", send: "Send all to Google Forms",
-      privacy: "Your reactions stay in this browser until you press the button. They then go to a Google form that Noah reads. Stored are your reactions, the components, the language and the time, plus your name and contact if you fill them in. Noah uses those only to reply to you. Leave them empty to stay anonymous, and please keep personal details out of your reactions.",
+      count: (n) => (n === 1 ? "1 reaction collected" : `${n} reactions collected`), note: "Nothing sent yet.", show: "View or add your name", name: "Name (optional)", contact: "Email or other contact (optional)", hide: "Hide", remove: "Remove", about: (v) => `You are reacting to the ${v} version.`, send: "Send all to Google Forms",
+      privacy: "Your reactions stay in this browser until you press the button. They then go to a Google form that Noah reads. Stored are your reactions, the components and whether they were about 2D or 3D, the language and the time, plus your name and contact if you fill them in. Noah uses those only to reply to you. Leave them empty to stay anonymous, and please keep personal details out of your reactions.",
       sending: "Sending…", thanks: "Thanks, your reactions were sent.", failed: "Sending failed. Your reactions are still here; please try again later.",
     },
   }[LANG];
 
   // sessionStorage keeps reactions across a language switch or reload. It can
   // throw in private modes; the bar then simply works for this page view only.
-  const STORAGE_KEY = "feedback-reactions";
-  const reactions = new Map(); // component -> { rating, comment }
+  const STORAGE_KEY = "feedback-reactions-v2";
+  // A toy can get a separate reaction per version, so the key is "racecar:3d"; text sections are just "about".
+  const keyOf = (component, view) => (view ? `${component}:${view}` : component);
+  const partsOf = (key) => { const [component, view = ""] = key.split(":"); return { component, view }; };
+  const viewName = (view) => view.toUpperCase();
+  const reactions = new Map(); // key -> { rating, comment }
   try {
     for (const [component, value] of JSON.parse(sessionStorage.getItem(STORAGE_KEY)) || []) reactions.set(component, value);
   } catch (error) { /* start empty */ }
 
   const widgets = new Map(); // component -> <vv-feedback>, in page order
+  const VIEWS = ["", "2d", "3d"];
 
   const bar = document.createElement("aside");
   bar.className = "feedback-bar";
@@ -575,16 +990,17 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
 
   // Rebuilt with textContent, so a comment can never become markup.
   function renderBar() {
-    const known = [...widgets.keys()].filter((component) => reactions.has(component));
+    const known = [...widgets.keys()].flatMap((component) => VIEWS.map((view) => keyOf(component, view))).filter((key) => reactions.has(key));
     summary.textContent = known.length ? `${t.count(known.length)}. ${t.note}` : t.none;
     toggle.hidden = !known.length;
     send.disabled = !known.length;
     if (!known.length) setPanel(false);
-    list.replaceChildren(...known.map((component) => {
-      const { rating, comment } = reactions.get(component);
+    list.replaceChildren(...known.map((key) => {
+      const { component, view } = partsOf(key);
+      const { rating, comment } = reactions.get(key);
       const item = document.createElement("li");
       const title = document.createElement("strong");
-      title.textContent = widgets.get(component).getAttribute("label");
+      title.textContent = widgets.get(component).getAttribute("label") + (view ? ` (${viewName(view)})` : "");
       const text = document.createElement("span");
       text.textContent = [rating === "like" ? `👍 ${t.like}` : rating === "dislike" ? `👎 ${t.dislike}` : "", comment].filter(Boolean).join(" · ");
       const remove = document.createElement("button");
@@ -592,7 +1008,7 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
       remove.className = "tool";
       remove.textContent = t.remove;
       remove.setAttribute("aria-label", `${t.remove}: ${title.textContent}`);
-      remove.addEventListener("click", () => update(component, { rating: null, comment: "" }));
+      remove.addEventListener("click", () => update(key, { rating: null, comment: "" }));
       item.append(title, text, remove);
       return item;
     }));
@@ -623,19 +1039,19 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
     });
   }
 
-  function update(component, change) {
-    const next = { rating: null, comment: "", ...reactions.get(component), ...change };
-    if (next.rating || next.comment.trim()) reactions.set(component, next);
-    else reactions.delete(component);
+  function update(key, change) {
+    const next = { rating: null, comment: "", ...reactions.get(key), ...change };
+    if (next.rating || next.comment.trim()) reactions.set(key, next);
+    else reactions.delete(key);
     save();
-    widgets.get(component).sync();
+    widgets.get(partsOf(key).component).sync();
     renderBar();
     say("");
   }
 
   send.addEventListener("click", async () => {
-    const items = [...reactions].filter(([component]) => widgets.has(component))
-      .map(([component, { rating, comment }]) => ({ component, rating, comment: comment.trim() }));
+    const items = [...reactions].filter(([key]) => widgets.has(partsOf(key).component))
+      .map(([key, { rating, comment }]) => ({ ...partsOf(key), rating, comment: comment.trim() }));
     send.disabled = true;
     say(t.sending);
     try {
@@ -669,12 +1085,17 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
       const component = this.getAttribute("component");
       const label = this.getAttribute("label");
       widgets.set(component, this);
+      // Toys start in 2D; sections without a toy have no view at all.
+      const section = this.closest("section");
+      this.view = section?.querySelector(".demo") ? "2d" : "";
       this.innerHTML = `<div class="reaction-buttons">
           <button type="button" class="tool" data-rating="like" aria-pressed="false">👍 ${t.like}</button>
           <button type="button" class="tool" data-rating="dislike" aria-pressed="false">👎 ${t.dislike}</button>
           <button type="button" class="tool" data-comment aria-expanded="false">💬 ${t.comment}</button>
         </div>
-        <textarea rows="3" maxlength="1000" enterkeyhint="done" hidden></textarea>`;
+        <textarea rows="3" maxlength="1000" enterkeyhint="done" hidden></textarea>
+        <p class="feedback-view" hidden></p>`;
+      this.viewNote = this.querySelector(".feedback-view");
       this.ratings = [...this.querySelectorAll("[data-rating]")];
       this.commentButton = this.querySelector("[data-comment]");
       this.textarea = this.querySelector("textarea");
@@ -684,8 +1105,8 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
         button.setAttribute("aria-label", `${button.dataset.rating === "like" ? t.like : t.dislike}: ${label}`);
         button.addEventListener("click", () => {
           const rating = button.dataset.rating;
-          const turningOn = reactions.get(component)?.rating !== rating;
-          update(component, { rating: turningOn ? rating : null });
+          const turningOn = reactions.get(this.key)?.rating !== rating;
+          update(this.key, { rating: turningOn ? rating : null });
           if (turningOn) fly(button, rating === "like" ? "👍" : "👎");
         });
       }
@@ -695,7 +1116,7 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
         this.commentButton.setAttribute("aria-expanded", String(!this.textarea.hidden));
         if (!this.textarea.hidden) this.textarea.focus();
       });
-      this.textarea.addEventListener("input", () => update(component, { comment: this.textarea.value }));
+      this.textarea.addEventListener("input", () => update(this.key, { comment: this.textarea.value }));
       // "change" fires when typing is finished, so it flies once and not per key.
       this.textarea.addEventListener("change", () => {
         if (this.textarea.value.trim()) fly(this.commentButton, "💬");
@@ -709,17 +1130,32 @@ section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){bor
         this.commentButton.setAttribute("aria-expanded", "false");
         this.commentButton.focus();
       });
-      this.sync();
-      if (this.textarea.value) { // a comment kept from before a reload or language switch
-        this.textarea.hidden = false;
-        this.commentButton.setAttribute("aria-expanded", "true");
-      }
+      section?.addEventListener("viewchange", (event) => {
+        this.view = event.detail;
+        this.viewNote.textContent = t.about(viewName(this.view));
+        this.viewNote.hidden = false; // only worth saying once a visitor has switched
+        this.showView();
+      });
+      this.showView();
       renderBar();
+    }
+
+    get key() { return keyOf(this.getAttribute("component"), this.view); }
+
+    // The buttons follow the version on screen; each version keeps its own reaction.
+    showView() {
+      const label = this.getAttribute("label") + (this.view ? ` (${viewName(this.view)})` : "");
+      for (const button of this.ratings) button.setAttribute("aria-label", `${button.dataset.rating === "like" ? t.like : t.dislike}: ${label}`);
+      this.commentButton.setAttribute("aria-label", `${t.comment}: ${label}`);
+      this.textarea.setAttribute("aria-label", `${t.comment}: ${label}`);
+      this.sync();
+      this.textarea.hidden = !this.textarea.value;
+      this.commentButton.setAttribute("aria-expanded", String(!this.textarea.hidden));
     }
 
     // Makes the buttons and the comment box show the collected reaction.
     sync() {
-      const reaction = reactions.get(this.getAttribute("component"));
+      const reaction = reactions.get(this.key);
       for (const button of this.ratings) button.setAttribute("aria-pressed", String(reaction?.rating === button.dataset.rating));
       const comment = reaction?.comment || "";
       if (this.textarea.value !== comment) this.textarea.value = comment;
