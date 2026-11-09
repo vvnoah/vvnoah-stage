@@ -60,7 +60,7 @@ input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
 .status{min-height:1.5em;margin:0;color:var(--muted);font-size:15px}
 .status.bad{color:var(--red);font-weight:700}
 .grid{display:grid;grid-template-columns:repeat(8,1fr);gap:2px;max-width:250px}
-.cell{aspect-ratio:1;min-width:0;padding:0;border:1px solid var(--line);border-radius:2px;background:var(--panel);cursor:pointer}
+.cell{aspect-ratio:1;min-width:0;padding:0;border:1px solid var(--line);border-radius:2px;background:var(--panel);cursor:pointer;touch-action:manipulation}
 .cell[aria-pressed="true"]{background:var(--ink)}
 .small-button{align-self:flex-start;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:4px 10px;font:15px "Liberation Serif","Times New Roman",serif;cursor:pointer}
 .machine{cursor:grab;touch-action:none;outline:none}
@@ -314,29 +314,48 @@ window.VV3D = (() => {
       this.uniforms = Object.fromEntries(["camera", "pivot", "offset", "size", "color"].map((name) => [name, gl.getUniformLocation(program, name)]));
       this.parts = [];
       this.yaw = 0.7; this.pitch = 0.3;
-      this.target = [0, 0, 0]; this.distance = 1;
+      this.target = [0, 0, 0]; this.distance = 1; this.zoom = 1;
       canvas.addEventListener("webglcontextlost", (event) => { event.preventDefault(); onLost(); });
       new ResizeObserver(() => this.draw()).observe(canvas);
       this.listen();
     }
 
-    // Horizontal drags orbit everywhere. CSS leaves vertical touch drags to the
-    // page, so the model cannot trap a thumb that is scrolling past it.
+    // Horizontal drags orbit everywhere; two fingers zoom. CSS leaves vertical touch
+    // drags to the page, so the model cannot trap a thumb that is scrolling past it.
     listen() {
       const canvas = this.canvas;
-      let last = null;
+      const fingers = new Map(); // latest event per active pointer
+      let spread = 0;
+      const fingerGap = () => {
+        const [a, b] = [...fingers.values()];
+        return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      };
       const orbit = (dx, dy) => {
         this.yaw -= dx;
         this.pitch = Math.max(-0.1, Math.min(1.45, this.pitch + dy));
         this.draw();
       };
-      canvas.addEventListener("pointerdown", (event) => { last = event; canvas.setPointerCapture(event.pointerId); });
-      canvas.addEventListener("pointermove", (event) => {
-        if (!last) return;
-        orbit((event.clientX - last.clientX) * 0.01, (event.clientY - last.clientY) * 0.01);
-        last = event;
+      canvas.addEventListener("pointerdown", (event) => {
+        fingers.set(event.pointerId, event);
+        canvas.setPointerCapture(event.pointerId);
+        if (fingers.size === 2) spread = fingerGap();
       });
-      for (const end of ["pointerup", "pointercancel"]) canvas.addEventListener(end, () => { last = null; });
+      canvas.addEventListener("pointermove", (event) => {
+        const last = fingers.get(event.pointerId);
+        if (!last) return;
+        fingers.set(event.pointerId, event);
+        if (fingers.size === 1) {
+          orbit((event.clientX - last.clientX) * 0.01, (event.clientY - last.clientY) * 0.01);
+        } else if (fingers.size === 2) {
+          const gap = fingerGap();
+          this.zoom = Math.max(0.7, Math.min(4, this.zoom * gap / (spread || gap)));
+          spread = gap;
+          this.draw();
+        }
+      });
+      for (const end of ["pointerup", "pointercancel"]) canvas.addEventListener(end, (event) => { fingers.delete(event.pointerId); });
+      // pan-y still lets two fingers scroll the page, which would cancel the pinch.
+      canvas.addEventListener("touchmove", (event) => { if (event.touches.length > 1) event.preventDefault(); }, { passive: false });
       canvas.addEventListener("keydown", (event) => {
         const step = { ArrowLeft: [-0.1, 0], ArrowRight: [0.1, 0], ArrowUp: [0, 0.1], ArrowDown: [0, -0.1] }[event.key];
         if (!step) return;
@@ -379,11 +398,12 @@ window.VV3D = (() => {
 
     matrix(aspect) {
       const direction = [Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch)];
-      const eye = this.target.map((value, i) => value + direction[i] * this.distance);
+      const distance = this.distance / this.zoom;
+      const eye = this.target.map((value, i) => value + direction[i] * distance);
       const back = unit(subtract(eye, this.target));
       const right = unit(cross([0, 1, 0], back));
       const up = cross(back, right);
-      const near = this.distance / 50, far = this.distance * 6;
+      const near = distance / 50, far = distance * 6;
       const focal = 1 / Math.tan(0.42) * Math.min(1, aspect / 1.2);
       const a = (far + near) / (near - far), b = 2 * far * near / (near - far);
       const x = -dot(right, eye), y = -dot(up, eye), z = -dot(back, eye);

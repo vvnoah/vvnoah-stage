@@ -59,7 +59,7 @@ input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
 .status{min-height:1.5em;margin:0;color:var(--muted);font-size:15px}
 .status.bad{color:var(--red);font-weight:700}
 .grid{display:grid;grid-template-columns:repeat(8,1fr);gap:2px;max-width:250px}
-.cell{aspect-ratio:1;min-width:0;padding:0;border:1px solid var(--line);border-radius:2px;background:var(--panel);cursor:pointer}
+.cell{aspect-ratio:1;min-width:0;padding:0;border:1px solid var(--line);border-radius:2px;background:var(--panel);cursor:pointer;touch-action:manipulation}
 .cell[aria-pressed="true"]{background:var(--ink)}
 .small-button{align-self:flex-start;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:4px 10px;font:15px "Liberation Serif","Times New Roman",serif;cursor:pointer}
 .machine{cursor:grab;touch-action:none;outline:none}
