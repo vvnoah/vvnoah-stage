@@ -60,6 +60,30 @@ input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
 .machine{cursor:grab;touch-action:none;outline:none}
 .machine:focus-visible rect{stroke:#1668c7;stroke-width:4}
 .machine.dragging{cursor:grabbing}
+vv-feedback{display:block;margin-top:10px}
+.reaction-buttons{display:flex;flex-wrap:wrap;gap:6px}
+vv-feedback .tool{min-height:40px;padding:4px 12px}
+vv-feedback .tool[aria-pressed="true"]{background:var(--button-bg);color:var(--button-ink);border-color:var(--button-bg)}
+vv-feedback .tool.filled{border-color:var(--ink);font-weight:700}
+vv-feedback textarea{display:block;width:100%;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink);font:16px/1.4 "Liberation Serif","Times New Roman",serif;resize:vertical}
+.feedback-bar{position:fixed;left:0;right:0;bottom:0;z-index:50;padding:8px 16px calc(8px + env(safe-area-inset-bottom));background:var(--panel);border-top:2px solid var(--ink);box-shadow:0 -2px 10px rgba(0,0,0,.2);font-size:15px}
+.feedback-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 14px;max-width:848px;margin:0 auto}
+.feedback-summary{margin:0}
+.feedback-actions{display:flex;flex-wrap:wrap;gap:6px}
+.feedback-actions .tool,.feedback-actions .button{min-height:40px;margin:0}
+.feedback-actions .button{border:0;cursor:pointer;font-family:inherit}
+.feedback-actions .button:disabled{opacity:.5;cursor:default}
+.feedback-panel{max-width:848px;max-height:50vh;margin:0 auto 8px;overflow:auto}
+.feedback-panel ul{list-style:none;margin:0 0 8px;padding:0}
+.feedback-panel li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.feedback-panel strong{grid-column:1}
+.feedback-panel span{grid-column:1}
+.feedback-panel .tool{grid-column:2;grid-row:1/3;min-height:36px}
+.feedback-status{max-width:848px;margin:0 auto}
+.feedback-status:empty{display:none}
+.feedback-status.bad{color:var(--red)}
+.trap{position:absolute;left:-9999px}
+.privacy{color:var(--muted);font-size:14px}
 @media (max-width:640px){
   .hero{grid-template-columns:1fr;gap:12px;padding-top:12px}
   .logo{width:120px;height:120px}
@@ -67,6 +91,19 @@ input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
   .grid{max-width:300px}
 }
 @media (prefers-reduced-motion:no-preference){.part{transition:fill .15s}}
+.feedback-flyer{position:fixed;z-index:60;font-size:24px;pointer-events:none}
+.reaction-buttons .tool{transition:border-color .2s ease,box-shadow .2s ease,transform .2s ease}
+.reaction-buttons .tool:nth-child(2){transition-delay:.04s}
+.reaction-buttons .tool:nth-child(3){transition-delay:.08s}
+/* The buttons are always there; hovering a component only makes them stand out. */
+@media (hover:hover){
+section:hover vv-feedback .reaction-buttons .tool{transform:translateY(-2px);box-shadow:0 2px 6px rgba(0,0,0,.25)}
+section:hover vv-feedback .reaction-buttons .tool:not([aria-pressed="true"]){border-color:var(--ink)}
+}
+@media (prefers-reduced-motion:reduce){.reaction-buttons .tool{transition:none}section:hover vv-feedback .reaction-buttons .tool{transform:none}}
+.feedback-contact{display:grid;gap:8px;margin-bottom:8px}
+.feedback-contact label{display:grid;gap:2px}
+.feedback-contact input{width:100%;min-height:40px;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink);font:16px/1.4 "Liberation Serif","Times New Roman",serif}
 </style>
 </head>
 <body>
@@ -83,7 +120,7 @@ input:focus-visible+.choice{outline:2px solid var(--focus);outline-offset:2px}
       <p class="role">Software · Hardware · Electromechanics · Belgium</p>
       <p class="claim">I build the tools that solve a problem, from software to electronics and mechanics.</p>
       <p>I run into something, I make what is missing, and I use it myself.</p>
-      <p class="links"><a class="button" href="mailto:vvnoah@hotmail.com">Contact</a> <a class="button secondary" href="https://stage.vvnoah.be/en/">Play with a few ideas (experimental)</a></p>
+      <p class="links"><a class="button" href="mailto:vvnoah@hotmail.com">Contact</a> <a class="button secondary" href="https://stage.vvnoah.be/en/">Learn more</a></p>
     </div>
   </header>
 
